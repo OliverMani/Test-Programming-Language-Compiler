@@ -1,0 +1,8 @@
+my_string = "Hello, world!\n"
+str2 = my_string
+
+$syscall 0x2000004, 1, my_string, 14
+
+
+
+$syscall 0x2000001, 0
