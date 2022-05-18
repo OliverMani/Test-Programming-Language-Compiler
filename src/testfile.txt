@@ -1,6 +1,7 @@
 my_string = "Hello, world!\n"
-str2 = my_string
+int = 10
 
+if int == 11:
  $syscall 0x2000004, 1, my_string, 14
 
 

@@ -15,7 +15,7 @@ SCOPE = 'scope'
 REGULAR_EXPRESSIONS = {
     FUNC_CALL: r'^\s*(?P<name>[a-zA-Z_]\w*)\s*\((?P<args>.*)\)\s*$',
     COMPILER_MSG: r'\s*\$(\S*)\s+(.*)',
-    CONDITION_STATEMENT: r'^(if|while|dowhile|assert)\s*(.+)\s*(==)\s*(.+):\s*$',
+    CONDITION_STATEMENT: r'^(if|while|dowhile|assert)\s*(.+)\s*(==|!=)\s*(.+):\s*$',
     FUNC_CREATE: r'^fun\s+([a-zA-Z_]\w*)\s*\((.*)\)\s*:\s*$',
     VAR_MOD: r'^([A-Za-z_]\w*)\s*(=|!=|\+=|\-=|\*=|\/=|\/\/=)\s*(.*)$', # variable modification, also creation
 }
@@ -57,6 +57,7 @@ class ScopeAssembly:
         self.section_data = []
         self.section_text = []
         self.variables_data = {}
+        self.statement_count = 0
 
         self.subscopes = {}
 
@@ -64,11 +65,14 @@ class ScopeAssembly:
         if auto_prepare:
             self.prepare_generation()
 
+    def get_statement_count(self):
+        if self.parent is None:
+            return self.statement_count
+        return self.statement_count + parent.get_statement_count()
+
     def prepare_generation(self):
-
         self.add_instruction('pushq %rbp')
-        #self.add_instruction('movq %rsp, %rbp')
-
+        condition_action = None
         for line in self.lines:
             analyzed = analyze_line(line)
             if analyzed:
@@ -80,7 +84,39 @@ class ScopeAssembly:
                 elif key is FUNC_CALL:
                     pass
                 elif key is CONDITION_STATEMENT:
-                    pass
+                    statement, left, action, right = analyzed[1:]
+                    left = left.replace(' ', '').replace('\t', '')
+                    right = right.replace(' ', '').replace('\t', '')
+                    statement_number = self.get_statement_count()
+                    self.statement_count += 1
+                    if statement in ['while', 'dowhile']:
+                        self.add_instruction(f'.WS{statement_number}:') # "While Statement" jump point
+
+                    if statement == 'if':
+                        lvalue = None
+                        rvalue = None
+                        if self.is_string(left):
+                            lvalue = self.create_constant('asciz', left)
+                        elif left.isdigit():
+                            lvalue = f'${left}'
+                        else:
+                            lvalue = f'-{self.get_var(left).address}(%rbp)'
+                        #print("LEFT VAR:", self.variables_data[left], f"(Left: {left})")
+
+                        if self.is_string(right):
+                            rvalue = self.create_constant('asciz', right)
+                        elif right.isdigit():
+                            rvalue = f'${right}'
+                        else:
+                            rvalue = f'-{self.get_var(right)}(%rbp)'
+
+                        self.add_instruction(f'cmpq {rvalue}, {lvalue}')
+                        condition_action = 'jne' if action == '==' else 'je'
+
+
+
+
+
                 elif key is FUNC_CREATE:
                     pass
                 elif key is VAR_MOD:
@@ -92,7 +128,14 @@ class ScopeAssembly:
                         self.put_var(varname, value)
                 elif key is SCOPE:
                     scope = analyzed[1]
-                    self.add_instruction(f'callq {scope.name}')
+                    if condition_action is None or condition_action == 'ENDIF':
+                        self.add_instruction(f'callq {scope.name}')
+                    else:
+                        endif_name = f'.ES{self.get_statement_count()}' # "End Statement"
+                        self.add_instruction(f'{condition_action} {endif_name}')
+                        self.add_instruction(f'callq {scope.name}')
+                        self.add_instruction(f'{endif_name}:')
+                        condition_action = 'ENDIF'
                     #print("SUBSCOPE:", scope)
         malloc = self.get_free_offset()
         if malloc != 0:
@@ -138,8 +181,9 @@ class ScopeAssembly:
             #self.add_instruction(self.name, f'addq %rbp')
             return name
 
-
-        self.add_instruction(f'movq {svalue}@GOTPCREL(%rip), %rax')
+        #print("SVALUE:", svalue)
+        gotpcrel = '@GOTPCREL(%rip)' if not svalue.startswith('$') else ''
+        self.add_instruction(f'movq {svalue}{gotpcrel}, %rax')
         self.add_instruction(f'movq %rax, -{var.address}(%rbp)')
         return name
 

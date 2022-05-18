@@ -13,10 +13,11 @@ def main(args):
         print("Please select a file!")
     else:
         lines = load_file(args[0])
-        asm = ScopeAssembly('_main', lines, public=True)
+        if lines:
+            asm = ScopeAssembly('_main', lines, public=True)
 
-        code = asm.generate()
-        print(code)
+            code = asm.generate()
+            print(code)
 
 if __name__ == '__main__':
     main(argv[1:])
