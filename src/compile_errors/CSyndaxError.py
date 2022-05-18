@@ -1,2 +1,0 @@
-class CSyndaxError(Exception):
-    pass
