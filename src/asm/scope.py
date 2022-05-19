@@ -48,7 +48,7 @@ def analyze_line(line):
         return (SCOPE, line)
 
 class ScopeAssembly:
-    def __init__(self, name, lines, parent=None, public=False, auto_prepare=True):
+    def __init__(self, name, lines, parent=None, public=False, auto_prepare=True, filename=None):
         self.name = name
         self.lines = []
         self.parent = parent
@@ -57,13 +57,20 @@ class ScopeAssembly:
         self.section_data = []
         self.section_text = []
         self.variables_data = {}
+        self.filename = filename
         self.statement_count = 0
 
         self.subscopes = {}
+        self.line_count = 0
 
         self.split_scopes(lines)
         if auto_prepare:
             self.prepare_generation()
+
+    def get_line_count(self):
+        if self.parent is None:
+            return self.line_count
+        return self.line_count + self.parent.get_line_count()
 
     def get_statement_count(self):
         if self.parent is None:
@@ -73,70 +80,84 @@ class ScopeAssembly:
     def prepare_generation(self):
         self.add_instruction('pushq %rbp')
         condition_action = None
-        for line in self.lines:
-            analyzed = analyze_line(line)
-            if analyzed:
-                key = analyzed[0]
-                if key is COMPILER_MSG:
-                    call, args = analyzed[1:]
-                    if call.lower() == 'syscall':
-                        self.make_syscall(args[0], args[1:], push=False)
-                elif key is FUNC_CALL:
-                    pass
-                elif key is CONDITION_STATEMENT:
-                    statement, left, action, right = analyzed[1:]
-                    left = left.replace(' ', '').replace('\t', '')
-                    right = right.replace(' ', '').replace('\t', '')
-                    statement_number = self.get_statement_count()
-                    self.statement_count += 1
-                    if statement in ['while', 'dowhile']:
-                        self.add_instruction(f'.WS{statement_number}:') # "While Statement" jump point
 
-                    if statement == 'if':
-                        lvalue = None
-                        rvalue = None
-                        if self.is_string(left):
-                            lvalue = self.create_constant('asciz', left)
-                        elif left.isdigit():
-                            lvalue = f'${left}'
+        for i in range(len(self.lines)):
+            self.line_count += 1
+            line = self.lines[i]
+            try:
+                analyzed = analyze_line(line)
+                if analyzed:
+                    key = analyzed[0]
+                    if key is COMPILER_MSG:
+                        call, args = analyzed[1:]
+                        if call.lower() == 'syscall':
+                            self.make_syscall(args[0], args[1:], push=False)
+                    elif key is FUNC_CALL:
+                        pass
+                    elif key is CONDITION_STATEMENT:
+                        statement, left, action, right = analyzed[1:]
+                        left = left.replace(' ', '').replace('\t', '')
+                        right = right.replace(' ', '').replace('\t', '')
+                        statement_number = self.get_statement_count()
+                        self.statement_count += 1
+                        if statement in ['while', 'dowhile']:
+                            self.add_instruction(f'.WS{statement_number}:') # "While Statement" jump point
+
+                        if statement == 'if':
+                            lvalue = None
+                            rvalue = None
+                            if self.is_string(left):
+                                lvalue = self.create_constant('asciz', left)
+                            elif left.isdigit():
+                                lvalue = f'${left}'
+                            else:
+                                lvalue = f'-{self.get_var(left).address}(%rbp)'
+                            #print("LEFT VAR:", self.variables_data[left], f"(Left: {left})")
+
+                            if self.is_string(right):
+                                rvalue = self.create_constant('asciz', right)
+                            elif right.isdigit():
+                                rvalue = f'${right}'
+                            else:
+                                rvalue = f'-{self.get_var(right)}(%rbp)'
+
+                            self.add_instruction(f'cmpq {rvalue}, {lvalue}')
+                            # Will have the OPPOSITE of jump
+                            condition_table = {
+                                '==': 'jne',
+                                '!=': 'je',
+                                '<' : 'jle',
+                                '>' : 'jge',
+                                '<=': 'jl',
+                                '>=': 'jg',
+                            }
+
+                            condition_action = condition_table[action] #'jne' if action == '==' else 'je'
+
+                    elif key is FUNC_CREATE:
+                        pass
+                    elif key is VAR_MOD:
+                        varname, action, value = analyzed[1:]
+                        var = self.get_var(varname)
+                        if var:
+                            self.mod_var(varname, value)
                         else:
-                            lvalue = f'-{self.get_var(left).address}(%rbp)'
-                        #print("LEFT VAR:", self.variables_data[left], f"(Left: {left})")
-
-                        if self.is_string(right):
-                            rvalue = self.create_constant('asciz', right)
-                        elif right.isdigit():
-                            rvalue = f'${right}'
+                            self.put_var(varname, value)
+                    elif key is SCOPE:
+                        scope = analyzed[1]
+                        if condition_action is None or condition_action == 'ENDIF':
+                            self.add_instruction(f'callq {scope.name}')
                         else:
-                            rvalue = f'-{self.get_var(right)}(%rbp)'
-
-                        self.add_instruction(f'cmpq {rvalue}, {lvalue}')
-                        condition_action = 'jne' if action == '==' else 'je'
-
-
-
-
-
-                elif key is FUNC_CREATE:
-                    pass
-                elif key is VAR_MOD:
-                    varname, action, value = analyzed[1:]
-                    var = self.get_var(varname)
-                    if var:
-                        self.mod_var(varname, value)
-                    else:
-                        self.put_var(varname, value)
-                elif key is SCOPE:
-                    scope = analyzed[1]
-                    if condition_action is None or condition_action == 'ENDIF':
-                        self.add_instruction(f'callq {scope.name}')
-                    else:
-                        endif_name = f'.ES{self.get_statement_count()}' # "End Statement"
-                        self.add_instruction(f'{condition_action} {endif_name}')
-                        self.add_instruction(f'callq {scope.name}')
-                        self.add_instruction(f'{endif_name}:')
-                        condition_action = 'ENDIF'
-                    #print("SUBSCOPE:", scope)
+                            endif_name = f'.ES{self.get_statement_count()}' # "End Statement"
+                            self.add_instruction(f'{condition_action} {endif_name}')
+                            self.add_instruction(f'callq {scope.name}')
+                            self.add_instruction(f'{endif_name}:')
+                            condition_action = 'ENDIF'
+                        #print("SUBSCOPE:", scope)
+            except errors.CompileError as e:
+                e.line = line
+                e.line_number = 0 #self.get_line_count()
+                raise e
         malloc = self.get_free_offset()
         if malloc != 0:
             self.section_text.insert(2, f'subq ${malloc}, %rsp')
@@ -328,7 +349,7 @@ class ScopeAssembly:
                     else: # this is a variable
                         var = self.get_var(args[i])
                         if not var:
-                            raise errors._VariableNotFound(f'Variable \'{args[i]}\' could not be found!')
+                            raise errors._VariableNotFound(f'Variable \'{args[i]}\' could not be found!', None, None)
                         self.add_instruction(f'movq -{var.address}(%rbp), %{registers_to_use[i]}')
             # PUSH if needed
             for i in range(len(args) - registers_to_push):

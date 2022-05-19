@@ -1,5 +1,6 @@
 from sys import argv
 from asm.scope import ScopeAssembly
+import errors
 
 def load_file(filename):
     try:
@@ -14,10 +15,14 @@ def main(args):
     else:
         lines = load_file(args[0])
         if lines:
-            asm = ScopeAssembly('_main', lines, public=True)
+            try:
+                asm = ScopeAssembly('_main', lines, public=True)
 
-            code = asm.generate()
-            print(code)
+                code = asm.generate()
+                print(code)
+            except errors.CompileError as e:
+                e.filename = args[0]
+                e.display()
 
 if __name__ == '__main__':
     main(argv[1:])
